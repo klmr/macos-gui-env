@@ -1,0 +1,47 @@
+#!/bin/zsh
+
+# Add every environment variable that an interactive login zsh adds or changes to the launchd user
+# domain, so that GUI applications see the same environment as the terminal shell.
+#
+# The following diffs the environment before and after zsh has read the config. A previous version
+# parsed the config files directly, but that misses some cases such as tied arrays (`path`,
+# `fpath` …), `typeset -x`, conditional exports, etc.
+
+# Variables that are set by launchd, and that we want to preserve (PATH is special, it might be
+# inherited in a modified state).
+base=(
+  HOME=$HOME
+  USER=$USER
+  LOGNAME=$LOGNAME
+  SHELL=$SHELL
+  TMPDIR=$TMPDIR
+  PATH=/usr/bin:/bin:/usr/sbin:/sbin
+)
+
+zsh_env() {
+  # Read from `/dev/null` to avoid zsh hanging if anything in the config files reads stdin.
+  env -i $base zsh "$@" -c 'env -0' </dev/null
+}
+
+# Variables that zsh itself changes, or that only make sense inside a terminal.
+skip=(GPG_TTY)
+
+typeset -A before after
+for kv in ${(0)"$(zsh_env -f)"}; do
+  before[${kv%%=*}]=${kv#*=}
+done
+
+for kv in ${(0)"$(zsh_env -li)"}; do
+  after[${kv%%=*}]=${kv#*=}
+done
+
+if ! (( ${#after} )); then
+  echo >&2 'zsh -lic produced no environment; not touching launchd'
+  exit 1
+fi
+
+for name value in "${(@kv)after}"; do
+  (( ${skip[(Ie)$name]} )) && continue
+  (( ${+before[$name]} )) && [[ ${before[$name]} == "$value" ]] && continue
+  launchctl setenv "$name" "$value"
+done
